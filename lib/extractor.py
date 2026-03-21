@@ -3,6 +3,7 @@
 import json
 import os
 import logging
+import random
 from io import StringIO
 
 import chess
@@ -11,7 +12,6 @@ import pandas as pd
 
 INPUT_FILE_PATH = os.path.join("data", "raw_games.json")
 OUTPUT_FILE_PATH = os.path.join("data", "features.csv")
-MAXIMUM_FULL_MOVES = 25
 
 PIECE_VALUES = {
     chess.PAWN: 1,
@@ -28,7 +28,7 @@ EXTENDED_CENTER_SQUARES = [chess.C3, chess.D3, chess.E3, chess.F3,
                            chess.C4, chess.D4, chess.E4, chess.F4,
                            chess.C5, chess.D5, chess.E5, chess.F5,
                            chess.C6, chess.D6, chess.E6, chess.F6]
-VALID_RESULTS = ("1-0", "0-1", "1/2-1/2")
+VALID_RESULTS = ("1-0", "0-1", "1/2-1/2", "*")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,7 +131,6 @@ def count_pawn_structure_features(board: chess.Board, color: chess.Color) -> dic
     """Count doubled, isolated, and passed pawns for a given color."""
     pawns = board.pieces(chess.PAWN, color)
     opponent_pawns = board.pieces(chess.PAWN, not color)
-    direction = 1 if color == chess.WHITE else -1
 
     doubled_count = 0
     isolated_count = 0
@@ -238,13 +237,46 @@ def parse_eco_category(headers: chess.pgn.Headers) -> int:
     return ord(first_letter) - ord("A")
 
 
+def compute_hanging_material(board: chess.Board) -> tuple[int, int]:
+    """Compute the total material value of undefended pieces attacked by the opponent."""
+    white_hanging = 0
+    black_hanging = 0
+    
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece is None:
+            continue
+            
+        color = piece.color
+        opponent_color = not color
+        
+        # If the piece is attacked by the opponent...
+        if board.is_attacked_by(opponent_color, square):
+            # And it is NOT protected by its own color...
+            if not board.is_attacked_by(color, square):
+                value = PIECE_VALUES.get(piece.piece_type, 0)
+                if color == chess.WHITE:
+                    white_hanging += value
+                else:
+                    black_hanging += value
+                    
+    return white_hanging, black_hanging
+
+
 # ---------------------------------------------------------------------------
 # Move tracking during replay
 # ---------------------------------------------------------------------------
 
-def replay_game_moves(board: chess.Board, game: chess.pgn.Game) -> dict | None:
-    """Replay the first 25 moves and track statistics."""
-    maximum_half_moves = MAXIMUM_FULL_MOVES * 2
+def replay_game_moves(board: chess.Board, game: chess.pgn.Game, random_subset: bool = True) -> tuple[dict | None, int]:
+    """Replay moves from the game and track statistics."""
+    moves = list(game.mainline())
+    total_half_moves = len(moves)
+    
+    if total_half_moves < 2 and random_subset:
+        return None, 0
+
+    # Během trénování vybíráme náhodný tah. Během live hry v prohlížeči přehráváme všechny tahy.
+    target_half_moves = random.randint(1, total_half_moves) if (random_subset and total_half_moves >= 2) else total_half_moves
 
     stats = {
         "white_castled": 0,
@@ -263,8 +295,8 @@ def replay_game_moves(board: chess.Board, game: chess.pgn.Game) -> dict | None:
 
     half_move_index = 0
 
-    for node in game.mainline():
-        if half_move_index >= maximum_half_moves:
+    for node in moves:
+        if half_move_index >= target_half_moves:
             break
 
         move = node.move
@@ -312,17 +344,14 @@ def replay_game_moves(board: chess.Board, game: chess.pgn.Game) -> dict | None:
 
         half_move_index += 1
 
-    if half_move_index < maximum_half_moves:
-        return None
-
-    return stats
+    return stats, half_move_index
 
 
 # ---------------------------------------------------------------------------
 # Main extraction
 # ---------------------------------------------------------------------------
 
-def extract_features(pgn_string: str, result_string: str) -> dict | None:
+def extract_features(pgn_string: str, result_string: str, random_subset: bool = True) -> dict | None:
     try:
         game = chess.pgn.read_game(StringIO(pgn_string))
     except Exception as exception:
@@ -337,11 +366,13 @@ def extract_features(pgn_string: str, result_string: str) -> dict | None:
         return None
 
     board = game.board()
-    move_stats = replay_game_moves(board, game)
+    move_stats, completed_half_moves = replay_game_moves(board, game, random_subset)
     if move_stats is None:
         return None
+        
+    move_number = (completed_half_moves // 2) + 1
 
-    # Position analysis after move 25
+    # Position analysis
     material_diff = compute_material_difference(board)
     white_material, black_material = compute_total_material(board)
     piece_counts = count_pieces_by_type(board)
@@ -363,9 +394,14 @@ def extract_features(pgn_string: str, result_string: str) -> dict | None:
     white_king_exposure = compute_king_exposure(board, chess.WHITE)
     black_king_exposure = compute_king_exposure(board, chess.BLACK)
 
+    white_hanging, black_hanging = compute_hanging_material(board)
+
     eco_category = parse_eco_category(game.headers)
 
     features = {
+        # General
+        "move_number": move_number,
+    
         # Material
         "material_diff": material_diff,
         "white_material": white_material,
@@ -408,6 +444,10 @@ def extract_features(pgn_string: str, result_string: str) -> dict | None:
         "black_king_safety": black_king_safety,
         "white_king_exposure": white_king_exposure,
         "black_king_exposure": black_king_exposure,
+
+        # Hanging material
+        "white_hanging": white_hanging,
+        "black_hanging": black_hanging,
 
         # Opening
         "eco_category": eco_category,

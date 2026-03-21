@@ -9,11 +9,11 @@ from collections import deque
 
 import requests
 
-MINIMUM_RATING = 400
-MAXIMUM_RATING = 1400
-TARGET_GAME_COUNT = 30000
+MINIMUM_RATING = 850
+MAXIMUM_RATING = 1800
+TARGET_GAME_COUNT = 100000
 OUTPUT_FILE_PATH = os.path.join("data", "raw_games.json")
-MAXIMUM_ARCHIVES_PER_PLAYER = 8
+MAXIMUM_ARCHIVES_PER_PLAYER = 10
 API_BASE_URL = "https://api.chess.com/pub"
 REQUEST_HEADERS = {
     "User-Agent": "ChessCrawler/1.0 (student project; contact: chess-predict@example.com)"
