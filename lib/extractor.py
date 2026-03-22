@@ -401,6 +401,7 @@ def extract_features(pgn_string: str, result_string: str, random_subset: bool = 
     features = {
         # General
         "move_number": move_number,
+        "side_to_move": 1 if board.turn == chess.WHITE else 0,
     
         # Material
         "material_diff": material_diff,
