@@ -3,7 +3,7 @@
 Projekt analyzuje historické šachové partie (na základě PGN zápisů) a pomocí strojového učení dokáže odhadnout šanci na výhru bílého, remízu či výhru černého v libovolné fázi hry.
 
 ### Důležité omezení modelu (Statická Evaluace)
-Prediktor je natrénován na principech statického ohodnocení pozice (tzv. Static Evaluation). **Nevidí do budoucnosti a nepočítá stromy tahů** (tzv. Depth Search), na rozdíl od enginů jako Stockfish. To znamená, že pokud například visí dáma (hned v dalším tahu bude zdarma sebrána), náš model to nedokáže předvídat a hodnotí pozici pouze na základě toho, že dáma stále fyzicky stojí na šachovnici. Zaměřuje se tedy na globální pochopení struktury a materiálu, nikoliv na jednokrokové taktické oběti.
+Prediktor je natrénován na principech statického ohodnocení pozice (tzv. Static Evaluation). **Nevidí do budoucnosti a nepočítá stromy tahů** (tzv. Depth Search), na rozdíl od enginů jako Stockfish. Oproti prvotním verzím modelu již **dokáže rozeznat bezprostřední hrozbu ztráty (tzv. "hanging" figurky)** a díky informaci o tom, kdo je právě na tahu, s ní dokáže přesně kalkulovat. Co ovšem algoritmus odhalit nedokáže, jsou hluboké taktické oběti na profesionální úrovni. Pokud velmistr úmyslně obětuje dámu za vynucený mat ve 3. tahu, náš model to vyhodnotí jako obří chybu a prohru pro daného hráče, protože analyzuje pouze stávající stav materiálu a struktury a nevykresluje si do paměti možné budoucí scénáře.
 
 ## Použité Technologie a Třídy
 - **Pre-processing:** `StandardScaler` (pro normalizaci šachových metrik), `LabelEncoder` (převod textových výsledků na pole 0, 1, 2)

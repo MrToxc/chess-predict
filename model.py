@@ -8,15 +8,15 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score, classification_report, confusion_matrix
 
 def load_data(filepath: str) -> pd.DataFrame:
-    """Nacte data ze zadaneho CSV souboru."""
+    """Load data from the specified CSV file."""
     data = pd.read_csv(filepath)
     return data
 
 def preprocess_data(data: pd.DataFrame):
     """
-    Rozdeli data na trenovaci a testovaci.
-    Zajisti encodovani textovych popisku (1-0, 0-1) na cisla (LabelEncoder).
-    Zaroven provede standardizaci dat (StandardScaler).
+    Splits data into training and testing sets.
+    Encodes text labels (1-0, 0-1) into numbers (LabelEncoder).
+    Also standardizes the data (StandardScaler).
     """
     le = LabelEncoder()
     data['result_encoded'] = le.fit_transform(data['result'])
@@ -37,13 +37,13 @@ def preprocess_data(data: pd.DataFrame):
 
 def build_and_train_model(X_train, y_train) -> MLPClassifier:
     """
-    Vytvori neuronovou sit MLPClassifier (nahrazuje TensorFlow) a natrenuje ji.
+    Creates an MLPClassifier neural network (replaces TensorFlow) and trains it.
     """
     # =========================================================================
-    # POZNÁMKA K IMPLEMENTACI NEURONOVÉ SÍTĚ:
-    # Jelikož na mém počítači běží verze Pythonu 3.14 a TensorFlow/Keras
-    # pro ni ještě nevyšel stabilně, navrhl jsem architekturu klasicky pres 
-    # scikit-learn. Vysledky jsou ale matematicky zcela shodne s resenim z hodin.
+    # NOTE ON NEURAL NETWORK IMPLEMENTATION:
+    # Since my computer runs Python 3.14 and TensorFlow/Keras
+    # has not released a stable version for it yet, I designed the architecture
+    # using scikit-learn. However, the results are mathematically identical to the class solution.
     # =========================================================================
     model = MLPClassifier(
         hidden_layer_sizes=(128, 64, 32),
@@ -67,7 +67,7 @@ def build_and_train_model(X_train, y_train) -> MLPClassifier:
     return model
 
 def evaluate_model(model: MLPClassifier, X_test, y_test, le: LabelEncoder):
-    """Vytiskne metriky modelu na testovaci sade (Accuracy, MAE, MSE, Confusion Matrix)."""
+    """Prints model metrics on the testing set (Accuracy, MAE, MSE, Confusion Matrix)."""
     y_pred = model.predict(X_test)
     
     print(f"\nMAE:      {mean_absolute_error(y_test, y_pred):.4f}")
@@ -80,7 +80,7 @@ def evaluate_model(model: MLPClassifier, X_test, y_test, le: LabelEncoder):
     print("Confusion Matrix:")
     print(confusion_matrix(y_test, y_pred))
 
-    # Ukazka nekolika predikci ve formatu procentualni sance (jako u sazkovky)
+    # Example of a few predictions in percentage format (like betting odds)
     y_proba = model.predict_proba(X_test)
     class_labels = list(le.classes_)
     white_win_idx, draw_idx, black_win_idx = class_labels.index('1-0'), class_labels.index('1/2-1/2'), class_labels.index('0-1')
@@ -97,14 +97,11 @@ def evaluate_model(model: MLPClassifier, X_test, y_test, le: LabelEncoder):
         print(f"{i:<4} {proba[white_win_idx]*100:>9.1f}% {proba[draw_idx]*100:>9.1f}% {proba[black_win_idx]*100:>9.1f}% | {actual:<10}")
 
 def save_model_artifacts(model, scaler, le, input_features):
-    """
-    Ulozi model na disk pomoci joblibu, abychom zamezili nutnosti 
-    prenacitat jej v prohlizeci.
-    """
-    # POZNAMKA OHLEDNE JOBLIB A WEBOVEHO ROZHRANI:
-    # Tato funkcnost (ukladani modelu do soboru a webove rozhrani Flask) 
-    # byla vygenerovana s asistenci AI z duvodu me neznalosti teto konkretni 
-    # okrajove syntaxe, jenz myslim ze zatim nebyla obsahem sylabu.
+
+    # NOTE REGARDING JOBLIB AND THE WEB INTERFACE:
+    # This functionality (saving the model to file and the Flask web interface)
+    # was generated with AI assistance because I am unfamiliar with this specific
+    # niche syntax, which I think has not been covered in the syllabus yet.
     os.makedirs('lib', exist_ok=True)
     joblib.dump(model, 'lib/trained_model.pkl')
     joblib.dump(scaler, 'lib/scaler.pkl')
@@ -113,19 +110,19 @@ def save_model_artifacts(model, scaler, le, input_features):
 
 def main():
     data = load_data("data/features.csv")
-    print(f"Nacteno {len(data)} her, {len(data.columns)} sloupcu")
+    print(f"Loaded {len(data)} games, {len(data.columns)} columns")
     
     X_train_std, X_test_std, y_train, y_test, scaler, le, input_features = preprocess_data(data)
-    print("Tridy:", le.classes_)
-    print(f"Pocet atributu: {len(input_features)}")
-    print(f"Trenovaci data: {len(X_train_std)} | Testovaci data: {len(X_test_std)}")
+    print("Classes:", le.classes_)
+    print(f"Number of attributes: {len(input_features)}")
+    print(f"Training data: {len(X_train_std)} | Testing data: {len(X_test_std)}")
     
     model = build_and_train_model(X_train_std, y_train)
     evaluate_model(model, X_test_std, y_test, le)
     
-    print("\nUkladam model do adresare lib/ pro webove rozhrani...")
+    print("\nSaving model to lib/ directory for the web interface...")
     save_model_artifacts(model, scaler, le, input_features)
-    print("Hotovo! Data ulozena.")
+    print("Done! Data saved.")
 
 if __name__ == "__main__":
     main()

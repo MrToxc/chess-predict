@@ -275,7 +275,7 @@ def replay_game_moves(board: chess.Board, game: chess.pgn.Game, random_subset: b
     if total_half_moves < 2 and random_subset:
         return None, 0
 
-    # Během trénování vybíráme náhodný tah. Během live hry v prohlížeči přehráváme všechny tahy.
+    # During training we select a random move. During a live game in the browser we replay all moves.
     target_half_moves = random.randint(1, total_half_moves) if (random_subset and total_half_moves >= 2) else total_half_moves
 
     stats = {

@@ -1,5 +1,3 @@
-"""Chess.com game crawler using snowball sampling."""
-
 import json
 import os
 import time
@@ -16,7 +14,7 @@ OUTPUT_FILE_PATH = os.path.join("data", "raw_games.json")
 MAXIMUM_ARCHIVES_PER_PLAYER = 10
 API_BASE_URL = "https://api.chess.com/pub"
 REQUEST_HEADERS = {
-    "User-Agent": "ChessCrawler/1.0 (student project; contact: chess-predict@example.com)"
+    "User-Agent": "ChessCrawler/1.0 (student project)"
 }
 
 logging.basicConfig(
@@ -146,6 +144,7 @@ def discover_seed_players(required_count: int = 10) -> list[str]:
         logger.error("Could not fetch any country player lists.")
         return []
 
+    #getting rid of bias
     random.shuffle(candidate_usernames)
     verified_seeds: list[str] = []
 
@@ -193,15 +192,18 @@ def process_player_archives(username: str, seen_game_urls: set[str]) -> list[dic
 
 
 def collect_opponent_usernames(game_records: list[dict], visited_players: set[str]) -> list[str]:
-    new_usernames: list[str] = []
+    new_usernames: set[str] = set()
+
     for record in game_records:
         white_username = record["white"].lower()
         black_username = record["black"].lower()
+
         if white_username not in visited_players:
-            new_usernames.append(white_username)
+            new_usernames.add(white_username)
         if black_username not in visited_players:
-            new_usernames.append(black_username)
-    return new_usernames
+            new_usernames.add(black_username)
+
+    return list(new_usernames)
 
 
 def crawl() -> None:
