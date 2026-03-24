@@ -7,10 +7,11 @@ from collections import deque
 
 import requests
 
-MINIMUM_RATING = 850
-MAXIMUM_RATING = 1800
-TARGET_GAME_COUNT = 100000
+MINIMUM_RATING = None  # Set to an integer (e.g., 850) to enforce a minimum rating
+MAXIMUM_RATING = None  # Set to an integer (e.g., 1800) to enforce a maximum rating
+TARGET_GAME_COUNT = 1000000
 OUTPUT_FILE_PATH = os.path.join("data", "raw_games.json")
+STATE_FILE_PATH = os.path.join("data", "crawler_state.json")
 MAXIMUM_ARCHIVES_PER_PLAYER = 10
 API_BASE_URL = "https://api.chess.com/pub"
 REQUEST_HEADERS = {
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_api_response(url: str) -> dict | None:
-    time.sleep(0.3)
+    time.sleep(0.2)
     try:
         response = requests.get(url, headers=REQUEST_HEADERS, timeout=30)
     except requests.RequestException as exception:
@@ -69,6 +70,33 @@ def save_games_to_file(games: list[dict]) -> None:
     os.replace(temporary_path, OUTPUT_FILE_PATH)
 
 
+def load_crawler_state() -> tuple[set[str], deque[str]]:
+    if not os.path.exists(STATE_FILE_PATH):
+        return set(), deque()
+    try:
+        with open(STATE_FILE_PATH, "r", encoding="utf-8") as file:
+            state = json.load(file)
+        visited = set(state.get("visited_players", []))
+        queue = deque(state.get("player_queue", []))
+        logger.info("Resumed BFS state with %d visited players and %d in queue.", len(visited), len(queue))
+        return visited, queue
+    except Exception as exception:
+        logger.error("Could not load crawler state: %s", exception)
+        return set(), deque()
+
+
+def save_crawler_state(visited_players: set[str], player_queue: deque[str]) -> None:
+    os.makedirs(os.path.dirname(STATE_FILE_PATH), exist_ok=True)
+    state = {
+        "visited_players": list(visited_players),
+        "player_queue": list(player_queue)
+    }
+    temporary_path = STATE_FILE_PATH + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False)
+    os.replace(temporary_path, STATE_FILE_PATH)
+
+
 def fetch_archive_urls(username: str) -> list[str]:
     response = fetch_api_response(f"{API_BASE_URL}/player/{username}/games/archives")
     if response is None:
@@ -82,7 +110,11 @@ def fetch_archive_urls(username: str) -> list[str]:
 def is_rating_in_range(rating: int | None) -> bool:
     if rating is None:
         return False
-    return MINIMUM_RATING <= rating <= MAXIMUM_RATING
+    if MINIMUM_RATING is not None and rating < MINIMUM_RATING:
+        return False
+    if MAXIMUM_RATING is not None and rating > MAXIMUM_RATING:
+        return False
+    return True
 
 
 def fetch_player_rapid_rating(username: str) -> int | None:
@@ -209,21 +241,19 @@ def collect_opponent_usernames(game_records: list[dict], visited_players: set[st
 def crawl() -> None:
     all_games = load_existing_games()
     seen_game_urls: set[str] = {game["url"] for game in all_games}
-    visited_players: set[str] = set()
-    player_queue: deque[str] = deque()
+    
+    visited_players, player_queue = load_crawler_state()
 
-    seed_players = discover_seed_players(required_count=10)
-    if not seed_players:
-        logger.error("No seed players found. Cannot start crawl.")
-        return
+    if not player_queue:
+        seed_players = discover_seed_players(required_count=10)
+        if not seed_players:
+            logger.error("No seed players found. Cannot start crawl.")
+            return
 
-    for player_name in seed_players:
-        player_queue.append(player_name.lower())
+        for player_name in seed_players:
+            player_queue.append(player_name.lower())
 
-    logger.info(
-        "Starting crawl — target: %d games, seed players: %d",
-        TARGET_GAME_COUNT, len(seed_players),
-    )
+    logger.info("Starting crawl — target: %d games", TARGET_GAME_COUNT)
 
     while player_queue and len(all_games) < TARGET_GAME_COUNT:
         current_username = player_queue.popleft()
@@ -238,16 +268,19 @@ def crawl() -> None:
         )
 
         new_games = process_player_archives(current_username, seen_game_urls)
-        if not new_games:
-            continue
-
+        
+        # We always want to collect their opponents to keep the BFS queue alive
         opponent_usernames = collect_opponent_usernames(new_games, visited_players)
         for opponent in opponent_usernames:
             player_queue.append(opponent)
 
-        all_games.extend(new_games)
-        save_games_to_file(all_games)
-        logger.info("  Saved %d new games (total: %d)", len(new_games), len(all_games))
+        if new_games:
+            all_games.extend(new_games)
+            save_games_to_file(all_games)
+            logger.info("  Saved %d new games (total: %d)", len(new_games), len(all_games))
+            
+        # Save state so if it crashes, we remember who we visited and who is in queue
+        save_crawler_state(visited_players, player_queue)
 
     logger.info("Crawl finished. Total games collected: %d", len(all_games))
 

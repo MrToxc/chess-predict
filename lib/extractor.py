@@ -12,6 +12,12 @@ import pandas as pd
 
 INPUT_FILE_PATH = os.path.join("data", "raw_games.json")
 OUTPUT_FILE_PATH = os.path.join("data", "features.csv")
+PROGRESS_FILE_PATH = os.path.join("data", "extractor_progress.json")
+
+# Configuration for sequential modeling
+HISTORY_LENGTH = 3
+SAMPLES_PER_GAME = 3
+MAX_GAMES_TO_PROCESS = None  # Set to an integer to limit the games processed (e.g., 1000)
 
 PIECE_VALUES = {
     chess.PAWN: 1,
@@ -241,44 +247,32 @@ def compute_hanging_material(board: chess.Board) -> tuple[int, int]:
     """Compute the total material value of undefended pieces attacked by the opponent."""
     white_hanging = 0
     black_hanging = 0
-    
+
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece is None:
             continue
-            
+
         color = piece.color
         opponent_color = not color
-        
-        # If the piece is attacked by the opponent...
+
         if board.is_attacked_by(opponent_color, square):
-            # And it is NOT protected by its own color...
             if not board.is_attacked_by(color, square):
                 value = PIECE_VALUES.get(piece.piece_type, 0)
                 if color == chess.WHITE:
                     white_hanging += value
                 else:
                     black_hanging += value
-                    
+
     return white_hanging, black_hanging
 
 
 # ---------------------------------------------------------------------------
-# Move tracking during replay
+# Move tracking and incremental stats
 # ---------------------------------------------------------------------------
 
-def replay_game_moves(board: chess.Board, game: chess.pgn.Game, random_subset: bool = True) -> tuple[dict | None, int]:
-    """Replay moves from the game and track statistics."""
-    moves = list(game.mainline())
-    total_half_moves = len(moves)
-    
-    if total_half_moves < 2 and random_subset:
-        return None, 0
-
-    # During training we select a random move. During a live game in the browser we replay all moves.
-    target_half_moves = random.randint(1, total_half_moves) if (random_subset and total_half_moves >= 2) else total_half_moves
-
-    stats = {
+def get_base_stats() -> dict:
+    return {
         "white_castled": 0,
         "black_castled": 0,
         "white_castled_on_move": 0,
@@ -293,83 +287,49 @@ def replay_game_moves(board: chess.Board, game: chess.pgn.Game, random_subset: b
         "checks_black": 0,
     }
 
-    half_move_index = 0
+def get_incremental_move_stats(board: chess.Board, move: chess.Move, base_stats: dict, is_white: bool, full_move_number: int) -> dict:
+    new_stats = base_stats.copy()
 
-    for node in moves:
-        if half_move_index >= target_half_moves:
-            break
+    if board.is_castling(move):
+        if is_white:
+            new_stats["white_castled"] = 1
+            new_stats["white_castled_on_move"] = full_move_number
+        else:
+            new_stats["black_castled"] = 1
+            new_stats["black_castled_on_move"] = full_move_number
 
-        move = node.move
-        is_white = (half_move_index % 2 == 0)
-        full_move_number = (half_move_index // 2) + 1
+    if board.is_capture(move):
+        if is_white:
+            new_stats["captures_white"] += 1
+        else:
+            new_stats["captures_black"] += 1
 
-        # Castling
-        if board.is_castling(move):
+    moving_piece = board.piece_at(move.from_square)
+    if moving_piece is not None:
+        if moving_piece.piece_type == chess.PAWN:
             if is_white:
-                stats["white_castled"] = 1
-                stats["white_castled_on_move"] = full_move_number
+                new_stats["pawn_moves_white"] += 1
             else:
-                stats["black_castled"] = 1
-                stats["black_castled_on_move"] = full_move_number
-
-        # Captures
-        if board.is_capture(move):
+                new_stats["pawn_moves_black"] += 1
+        else:
             if is_white:
-                stats["captures_white"] += 1
+                new_stats["piece_moves_white"] += 1
             else:
-                stats["captures_black"] += 1
+                new_stats["piece_moves_black"] += 1
 
-        # Move type
-        moving_piece = board.piece_at(move.from_square)
-        if moving_piece is not None:
-            if moving_piece.piece_type == chess.PAWN:
-                if is_white:
-                    stats["pawn_moves_white"] += 1
-                else:
-                    stats["pawn_moves_black"] += 1
-            else:
-                if is_white:
-                    stats["piece_moves_white"] += 1
-                else:
-                    stats["piece_moves_black"] += 1
+    board.push(move)
+    if board.is_check():
+        if is_white:
+            new_stats["checks_white"] += 1
+        else:
+            new_stats["checks_black"] += 1
+    board.pop()
 
-        board.push(move)
-
-        # Checks (after pushing the move)
-        if board.is_check():
-            if is_white:
-                stats["checks_white"] += 1
-            else:
-                stats["checks_black"] += 1
-
-        half_move_index += 1
-
-    return stats, half_move_index
+    return new_stats
 
 
-# ---------------------------------------------------------------------------
-# Main extraction
-# ---------------------------------------------------------------------------
-
-def extract_features(pgn_string: str, result_string: str, random_subset: bool = True) -> dict | None:
-    try:
-        game = chess.pgn.read_game(StringIO(pgn_string))
-    except Exception as exception:
-        logger.warning("Failed to parse PGN: %s", exception)
-        return None
-
-    if game is None:
-        return None
-
-    result = result_string if result_string else game.headers.get("Result", "*")
-    if result not in VALID_RESULTS:
-        return None
-
-    board = game.board()
-    move_stats, completed_half_moves = replay_game_moves(board, game, random_subset)
-    if move_stats is None:
-        return None
-        
+def extract_single_state_features(board: chess.Board, completed_half_moves: int, move_stats: dict, eco_category: int) -> dict:
+    """Extracts features for a single board state."""
     move_number = (completed_half_moves // 2) + 1
 
     # Position analysis
@@ -396,69 +356,193 @@ def extract_features(pgn_string: str, result_string: str, random_subset: bool = 
 
     white_hanging, black_hanging = compute_hanging_material(board)
 
-    eco_category = parse_eco_category(game.headers)
-
     features = {
-        # General
         "move_number": move_number,
         "side_to_move": 1 if board.turn == chess.WHITE else 0,
-    
-        # Material
         "material_diff": material_diff,
         "white_material": white_material,
         "black_material": black_material,
         **piece_counts,
-
-        # Bishop pair
         "white_bishop_pair": has_bishop_pair(board, chess.WHITE),
         "black_bishop_pair": has_bishop_pair(board, chess.BLACK),
-
-        # Development
         "white_developed": white_developed,
         "black_developed": black_developed,
-
-        # Move stats from replay
         **move_stats,
-
-        # Center control
         "center_control_white": center_white,
         "center_control_black": center_black,
         "ext_center_white": ext_center_white,
         "ext_center_black": ext_center_black,
-
-        # Mobility and space
         "white_mobility": white_mobility,
         "black_mobility": black_mobility,
         "white_attacked_squares": white_attacks,
         "black_attacked_squares": black_attacks,
-
-        # Pawn structure
         "white_doubled_pawns": white_pawn_structure["doubled"],
         "black_doubled_pawns": black_pawn_structure["doubled"],
         "white_isolated_pawns": white_pawn_structure["isolated"],
         "black_isolated_pawns": black_pawn_structure["isolated"],
         "white_passed_pawns": white_pawn_structure["passed"],
         "black_passed_pawns": black_pawn_structure["passed"],
-
-        # King safety
         "white_king_safety": white_king_safety,
         "black_king_safety": black_king_safety,
         "white_king_exposure": white_king_exposure,
         "black_king_exposure": black_king_exposure,
-
-        # Hanging material
         "white_hanging": white_hanging,
         "black_hanging": black_hanging,
-
-        # Opening
         "eco_category": eco_category,
-
-        # Result
-        "result": result,
     }
 
     return features
 
+def get_empty_features() -> dict:
+    """Returns a dictionary of features with all values set to zero for history padding."""
+    b = chess.Board()
+    f = extract_single_state_features(b, 0, get_base_stats(), -1)
+    for k in f.keys():
+        f[k] = 0
+    return f
+
+EMPTY_FEATURES = get_empty_features()
+
+# ---------------------------------------------------------------------------
+# Main extraction sequence loop
+# ---------------------------------------------------------------------------
+
+def process_game(game_record: dict, game_index: int) -> list[dict]:
+    pgn_string = game_record.get("pgn", "")
+    if not pgn_string:
+        return []
+
+    try:
+        game = chess.pgn.read_game(StringIO(pgn_string))
+    except Exception as exception:
+        logger.warning("Failed to parse PGN: %s", exception)
+        return []
+
+    if game is None:
+        return []
+
+    eco_category = parse_eco_category(game.headers)
+    white_elo = game_record.get("white_rating", 1500)
+    black_elo = game_record.get("black_rating", 1500)
+    
+    # We will enforce valid numbers just in case
+    if white_elo is None: white_elo = 1500
+    if black_elo is None: black_elo = 1500
+
+    board = game.board()
+    moves = list(game.mainline())
+    total_half_moves = len(moves)
+
+    if total_half_moves < 2:
+        return []
+
+    # 1. Collect all history states for the entire game
+    history_states = []
+    current_stats = get_base_stats()
+
+    for half_move_index, node in enumerate(moves):
+        is_white = (half_move_index % 2 == 0)
+        full_move_number = (half_move_index // 2) + 1
+
+        # Extract BEFORE the move is played
+        state_features = extract_single_state_features(board, half_move_index, current_stats, eco_category)
+        history_states.append(state_features)
+
+        # Update board and stats
+        current_stats = get_incremental_move_stats(board, node.move, current_stats, is_white, full_move_number)
+        board.push(node.move)
+
+    # 2. Pick random turns to sample
+    safe_max_samples = min(SAMPLES_PER_GAME, total_half_moves)
+    sample_indices = random.sample(range(total_half_moves), safe_max_samples)
+
+    generated_rows = []
+
+    for turn_idx in sample_indices:
+        played_move = moves[turn_idx].move
+
+        # Reconstruct the board up to this exact turn
+        b = game.board()
+        stats = get_base_stats()
+        for i in range(turn_idx):
+            is_w = (i % 2 == 0)
+            f_mn = (i // 2) + 1
+            stats = get_incremental_move_stats(b, moves[i].move, stats, is_w, f_mn)
+            b.push(moves[i].move)
+
+        legal_moves = list(b.legal_moves)
+        is_w = (turn_idx % 2 == 0)
+        f_mn = (turn_idx // 2) + 1
+
+        # Generate a candidate row for EVERY legal move
+        played_row = None
+        unplayed_rows = []
+
+        for candidate_move in legal_moves:
+            # 1. Get candidate features
+            cand_stats = get_incremental_move_stats(b, candidate_move, stats, is_w, f_mn)
+            b.push(candidate_move)
+            cand_features = extract_single_state_features(b, turn_idx + 1, cand_stats, eco_category)
+            b.pop()
+
+            was_played = 1 if candidate_move == played_move else 0
+
+            # 2. Initialize the row with base info
+            row = {
+                "game_id": game_index,
+                "turn_index": turn_idx,
+                "white_elo": white_elo,
+                "black_elo": black_elo,
+                "was_played": was_played
+            }
+
+            # 3. Add History parameters
+            for h in range(1, HISTORY_LENGTH + 1):
+                hist_idx = turn_idx - (HISTORY_LENGTH - h + 1)
+                
+                if hist_idx < 0:
+                    hist_f = EMPTY_FEATURES
+                else:
+                    hist_f = history_states[hist_idx]
+
+                for key, value in hist_f.items():
+                    row[f"hist_{h}_{key}"] = value
+
+            # 4. Add Candidate parameters
+            for key, value in cand_features.items():
+                row[f"cand_{key}"] = value
+
+            if was_played == 1:
+                played_row = row
+            else:
+                unplayed_rows.append(row)
+
+        # 5. DOWNSAMPLING (The fix for the AI guessing bad moves)
+        # Instead of feeding the AI 30 bad moves for every 1 good move (which makes it just guess '0' for everything),
+        # we will only keep 3 random bad moves. This 1:3 ratio forces the Neural Network to actually learn chess patterns!
+        if played_row:
+            generated_rows.append(played_row)
+        
+        safe_sample_count = min(3, len(unplayed_rows))
+        generated_rows.extend(random.sample(unplayed_rows, safe_sample_count))
+
+    return generated_rows
+
+
+def load_progress() -> int:
+    if os.path.exists(PROGRESS_FILE_PATH):
+        try:
+            with open(PROGRESS_FILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("last_processed_game_index", -1)
+        except Exception:
+            return -1
+    return -1
+
+def save_progress(game_index: int) -> None:
+    os.makedirs(os.path.dirname(PROGRESS_FILE_PATH), exist_ok=True)
+    with open(PROGRESS_FILE_PATH, "w", encoding="utf-8") as f:
+        json.dump({"last_processed_game_index": game_index}, f)
 
 def run_extraction() -> None:
     if not os.path.exists(INPUT_FILE_PATH):
@@ -470,52 +554,51 @@ def run_extraction() -> None:
 
     logger.info("Loaded %d raw games from %s", len(raw_games), INPUT_FILE_PATH)
 
-    features_list: list[dict] = []
+    if MAX_GAMES_TO_PROCESS is not None:
+        raw_games = raw_games[:MAX_GAMES_TO_PROCESS]
+        logger.info("Limiting extraction to %d games.", len(raw_games))
+
+    last_processed = load_progress()
+    start_index = last_processed + 1
+
+    if start_index >= len(raw_games):
+        logger.info("All games have already been processed.")
+        return
+
+    if start_index > 0:
+        logger.info("Resuming extraction from game index %d", start_index)
+
+    batch_features = []
     skipped_count = 0
     error_count = 0
+    total_extracted_in_run = 0
 
-    for game_index, game_record in enumerate(raw_games):
-        pgn_string = game_record.get("pgn", "")
-        if not pgn_string:
-            error_count += 1
-            continue
-
-        result_string = ""
+    for game_index in range(start_index, len(raw_games)):
+        game_record = raw_games[game_index]
         try:
-            quick_game = chess.pgn.read_game(StringIO(pgn_string))
-            if quick_game:
-                result_string = quick_game.headers.get("Result", "")
-        except Exception:
-            pass
-
-        try:
-            features = extract_features(pgn_string, result_string)
+            game_rows = process_game(game_record, game_index)
+            if not game_rows:
+                skipped_count += 1
+            else:
+                batch_features.extend(game_rows)
         except Exception as exception:
-            logger.warning("Error extracting features from game %d: %s", game_index, exception)
+            logger.warning("Error processing game %d: %s", game_index, exception)
             error_count += 1
-            continue
 
-        if features is None:
-            skipped_count += 1
-            continue
+        # Save batch every 500 games or at the end
+        if (game_index + 1) % 500 == 0 or game_index == len(raw_games) - 1:
+            if batch_features:
+                dataframe = pd.DataFrame(batch_features)
+                os.makedirs(os.path.dirname(OUTPUT_FILE_PATH), exist_ok=True)
+                write_header = not os.path.exists(OUTPUT_FILE_PATH)
+                dataframe.to_csv(OUTPUT_FILE_PATH, mode='a', header=write_header, index=False)
+                total_extracted_in_run += len(batch_features)
+                batch_features = []
 
-        features_list.append(features)
+            save_progress(game_index)
+            logger.info("  Processed %d / %d games. Progress saved.", game_index + 1, len(raw_games))
 
-        if (game_index + 1) % 500 == 0:
-            logger.info("  Processed %d / %d games", game_index + 1, len(raw_games))
-
-    if features_list:
-        dataframe = pd.DataFrame(features_list)
-        os.makedirs(os.path.dirname(OUTPUT_FILE_PATH), exist_ok=True)
-        dataframe.to_csv(OUTPUT_FILE_PATH, index=False)
-        logger.info("Saved %d feature rows (%d columns) to %s", len(dataframe), len(dataframe.columns), OUTPUT_FILE_PATH)
-    else:
-        logger.warning("No features extracted — output file not created.")
-
-    logger.info(
-        "Done. Extracted: %d | Skipped: %d | Errors: %d",
-        len(features_list), skipped_count, error_count,
-    )
+    logger.info("Done. Extracted Rows in this run: %d | Skipped: %d | Errors: %d", total_extracted_in_run, skipped_count, error_count)
 
 
 if __name__ == "__main__":

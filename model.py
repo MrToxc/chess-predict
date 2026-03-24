@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score, classification_report, confusion_matrix
 
@@ -15,14 +15,13 @@ def load_data(filepath: str) -> pd.DataFrame:
 def preprocess_data(data: pd.DataFrame):
     """
     Splits data into training and testing sets.
-    Encodes text labels (1-0, 0-1) into numbers (LabelEncoder).
-    Also standardizes the data (StandardScaler).
+    Standardizes the continuous feature data (StandardScaler).
+    Target 'was_played' is already binary (0 or 1), so no LabelEncoder is needed.
     """
-    le = LabelEncoder()
-    data['result_encoded'] = le.fit_transform(data['result'])
-
-    input_features = [col for col in data.columns if col not in ['result', 'result_encoded']]
-    target_feature = 'result_encoded'
+    
+    # We drop 'game_id' so the AI doesn't try to mathematically multiply it
+    input_features = [col for col in data.columns if col not in ['was_played', 'game_id']]
+    target_feature = 'was_played'
 
     X_train, X_test, y_train, y_test = train_test_split(
         data[input_features], data[target_feature],
@@ -33,18 +32,14 @@ def preprocess_data(data: pd.DataFrame):
     X_train_std = scaler.fit_transform(X_train)
     X_test_std = scaler.transform(X_test)
 
-    return X_train_std, X_test_std, y_train, y_test, scaler, le, input_features
+    return X_train_std, X_test_std, y_train, y_test, scaler, input_features
 
 def build_and_train_model(X_train, y_train) -> MLPClassifier:
     """
-    Creates an MLPClassifier neural network (replaces TensorFlow) and trains it.
+    Creates an MLPClassifier neural network and trains it.
+    Since y_train only contains 0 and 1, it will automatically
+    train as a Binary Classifier calculating playing probability.
     """
-    # =========================================================================
-    # NOTE ON NEURAL NETWORK IMPLEMENTATION:
-    # Since my computer runs Python 3.14 and TensorFlow/Keras
-    # has not released a stable version for it yet, I designed the architecture
-    # using scikit-learn. However, the results are mathematically identical to the class solution.
-    # =========================================================================
     model = MLPClassifier(
         hidden_layer_sizes=(128, 64, 32),
         activation='relu',
@@ -61,13 +56,11 @@ def build_and_train_model(X_train, y_train) -> MLPClassifier:
         verbose=True
     )
     
-
-    
     model.fit(X_train, y_train)
     return model
 
-def evaluate_model(model: MLPClassifier, X_test, y_test, le: LabelEncoder):
-    """Prints model metrics on the testing set (Accuracy, MAE, MSE, Confusion Matrix)."""
+def evaluate_model(model: MLPClassifier, X_test, y_test):
+    """Prints model metrics on the testing set for Candidate Scoring."""
     y_pred = model.predict(X_test)
     
     print(f"\nMAE:      {mean_absolute_error(y_test, y_pred):.4f}")
@@ -75,53 +68,51 @@ def evaluate_model(model: MLPClassifier, X_test, y_test, le: LabelEncoder):
     print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
 
     print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=le.classes_, zero_division=0))
+    print(classification_report(y_test, y_pred, target_names=['Not Played (0)', 'Played (1)'], zero_division=0))
 
     print("Confusion Matrix:")
     print(confusion_matrix(y_test, y_pred))
 
-    # Example of a few predictions in percentage format (like betting odds)
+    # Example of a few predictions showing the raw probability the AI assigned
     y_proba = model.predict_proba(X_test)
-    class_labels = list(le.classes_)
-    white_win_idx, draw_idx, black_win_idx = class_labels.index('1-0'), class_labels.index('1/2-1/2'), class_labels.index('0-1')
 
-    print(f"\n{'#':<4} {'White Win':>10} {'Draw':>10} {'Black Win':>10} | {'Actual':<10}")
-    print("-" * 55)
+    print(f"\n{'#':<4} {'Prediction (Human Chose It?)':>30} | {'Actual Human Choice':<20}")
+    print("-" * 65)
     
     rng = np.random.RandomState(42)
-    sample_idx = rng.choice(len(y_test), size=10, replace=False)
+    # Make sure we don't try to sample more rows than exist if the test set is tiny
+    sample_size = min(10, len(y_test))
+    sample_idx = rng.choice(len(y_test), size=sample_size, replace=False)
 
     for i in sample_idx:
         proba = y_proba[i]
-        actual = le.inverse_transform([y_test.iloc[i]])[0]
-        print(f"{i:<4} {proba[white_win_idx]*100:>9.1f}% {proba[draw_idx]*100:>9.1f}% {proba[black_win_idx]*100:>9.1f}% | {actual:<10}")
+        # index 1 gives the probability of 'was_played' being 1 (True)
+        prob_played = proba[1] * 100
+        actual = y_test.iloc[i]
+        print(f"{i:<4} {prob_played:>29.1f}% | {actual:<20}")
 
-def save_model_artifacts(model, scaler, le, input_features):
-
-    # NOTE REGARDING JOBLIB AND THE WEB INTERFACE:
-    # This functionality (saving the model to file and the Flask web interface)
-    # was generated with AI assistance because I am unfamiliar with this specific
-    # niche syntax, which I think has not been covered in the syllabus yet.
+def save_model_artifacts(model, scaler, input_features):
     os.makedirs('lib', exist_ok=True)
     joblib.dump(model, 'lib/trained_model.pkl')
     joblib.dump(scaler, 'lib/scaler.pkl')
-    joblib.dump(le, 'lib/label_encoder.pkl')
     joblib.dump(input_features, 'lib/input_features.pkl')
+    # Because there is no label encoder anymore, we removed that save call.
+    # The web interface (app.py) will also need to be updated to no longer
+    # require loading a label_encoder.pkl if it was using it.
 
 def main():
     data = load_data("data/features.csv")
-    print(f"Loaded {len(data)} games, {len(data.columns)} columns")
+    print(f"Loaded {len(data)} candidate move rows, {len(data.columns)} columns")
     
-    X_train_std, X_test_std, y_train, y_test, scaler, le, input_features = preprocess_data(data)
-    print("Classes:", le.classes_)
-    print(f"Number of attributes: {len(input_features)}")
-    print(f"Training data: {len(X_train_std)} | Testing data: {len(X_test_std)}")
+    X_train_std, X_test_std, y_train, y_test, scaler, input_features = preprocess_data(data)
+    print(f"Number of attributes (features): {len(input_features)}")
+    print(f"Training rows: {len(X_train_std)} | Testing rows: {len(X_test_std)}")
     
     model = build_and_train_model(X_train_std, y_train)
-    evaluate_model(model, X_test_std, y_test, le)
+    evaluate_model(model, X_test_std, y_test)
     
     print("\nSaving model to lib/ directory for the web interface...")
-    save_model_artifacts(model, scaler, le, input_features)
+    save_model_artifacts(model, scaler, input_features)
     print("Done! Data saved.")
 
 if __name__ == "__main__":

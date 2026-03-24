@@ -15,6 +15,16 @@
     
     <!-- Custom CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .highlight-ai {
+            box-shadow: inset 0 0 3px 3px rgba(255, 255, 0, 0.8) !important;
+            background-color: rgba(255, 255, 0, 0.4) !important;
+        }
+        .ai-ghost-piece {
+            opacity: 0.6;
+            filter: drop-shadow(0 0 5px yellow);
+        }
+    </style>
 </head>
 <body>
     <div class="background-orbs">
@@ -26,7 +36,7 @@
     <main class="container glass-panel">
         <header>
             <h1>AI Šachový Prediktor</h1>
-            <p>Natrénováno na 100 000 partiích. Udělej tah a sleduj, jak umělá inteligence hodnotí tvé šance.</p>
+            <p>Natrénováno na statisících partií. Učte se předvídat další tah se šachovým AI Asistentem.</p>
         </header>
 
         <div class="app-grid">
@@ -38,32 +48,20 @@
                 </div>
             </div>
 
-            <div class="evaluation-section">
-                <h2>Živá AI Analýza</h2>
+            <div class="evaluation-section" style="display: flex; flex-direction: column; justify-content: center; align-items: flex-start; padding: 2rem;">
+                <h2>AI Asistent</h2>
                 
-                <div class="eval-bar-container">
-                    <div class="eval-labels">
-                        <span class="label-white">Bílý</span>
-                        <span class="label-draw">Remíza</span>
-                        <span class="label-black">Černý</span>
-                    </div>
-                    
-                    <div class="eval-tube">
-                        <div id="bar-white" class="eval-fill fill-white" style="width: 50%;">
-                            <span class="percent-val" id="val-white">50.0%</span>
-                        </div>
-                        <div id="bar-draw" class="eval-fill fill-draw" style="width: 0%;">
-                            <span class="percent-val" id="val-draw">0.0%</span>
-                        </div>
-                        <div id="bar-black" class="eval-fill fill-black" style="width: 50%;">
-                            <span class="percent-val" id="val-black">50.0%</span>
-                        </div>
-                    </div>
+                <div class="controls toggle-container" style="margin-top: 2rem;">
+                    <label class="toggle-label" style="display:flex; align-items:center; gap: 15px; font-weight: 600; cursor: pointer; font-size: 1.2rem; color: #fff;">
+                        <input type="checkbox" id="aiToggle" style="width: 25px; height: 25px;">
+                        Zobrazit nápovědu (Stín tahu)
+                    </label>
                 </div>
 
-                <div class="status-panel">
-                    <h3>Status Hry</h3>
-                    <p id="game-status">Bílý je na tahu.</p>
+                <div class="status-panel" style="margin-top: 3rem; background: rgba(0,0,0,0.2); border-radius: 10px; padding: 20px; width: 100%;">
+                    <h3 style="color: #4CAF50;">Status Hry</h3>
+                    <p id="game-status" style="font-size: 1.1rem; color: #ddd; margin-top: 10px;">Bílý je na tahu.</p>
+                    <p id="ai-commentary" style="margin-top: 1rem; color: #fff; font-weight: bold;"></p>
                 </div>
             </div>
         </div>
